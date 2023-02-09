@@ -9,7 +9,7 @@ import httpx
 from nonebot import get_driver
 
 headers = {
-    'Authorization': '584003729:j2itJY5GEFy2tPlfh7RieBDCqKpAaBQVnNXOjkd5RBsah3'
+    'Authorization': get_driver().config.api_token
 }
 
 @dataclasses.dataclass()
@@ -257,7 +257,7 @@ class queryRequester:
 				with httpx.Client(headers=headers) as client:
 					raw = client.get(url=queryRequester.url + queryRequester.queryUserInfo, params=getParam)
 					result = raw.json()
-					entity = queryRequester.resolver(result['data'], db)
+					entity = queryRequester.resolver(result['data'], queryRequester.db)
 					queryRequester.db.renewRecord(user[0], entity, result['queryTime'])
 
 			time.sleep(60 * queryRequester.timegap)
