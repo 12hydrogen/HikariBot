@@ -1,20 +1,18 @@
 import dataclasses
 import inspect
 import sqlite3
+import threading
 import time
-from typing import Callable, LiteralString
+from typing import Any, Callable, LiteralString
 
 import httpx
 from nonebot import get_driver
 
-recentDB = sqlite3.connect('./recent.db')
-defaultCursor = sqlite3.Cursor()
-
 headers = {
-    'Authorization': get_driver().config.api_token
+    'Authorization': '584003729:j2itJY5GEFy2tPlfh7RieBDCqKpAaBQVnNXOjkd5RBsah3'
 }
 
-@dataclasses
+@dataclasses.dataclass()
 class query:
 	battles: int
 	pr: int
@@ -25,6 +23,9 @@ class query:
 	kdRate: float
 	hitRate: float
 
+def constructShinoakiAPI(data: query) -> dict:
+	pass
+
 class localDB:
 	__DB_NAME = './recent.db'
 	__INIT_SQL_NAME = './create.sql'
@@ -34,7 +35,10 @@ class localDB:
 		if not self.__CREATED:
 			self.__entity = sqlite3.connect(self.__DB_NAME)
 			self.__cursor = sqlite3.Cursor(self.__entity)
-			self.__cursor.executescript(self.__INIT_SQL_NAME)
+			self.__cursor.execute('pragma foreign_keys=ON')
+			with open(self.__INIT_SQL_NAME) as file:
+				self.__INIT_SQL = file.read()
+			self.__cursor.executescript(self.__INIT_SQL)
 
 			self.__cursor.execute('select name from sqlite_master where type="table"')
 			self.__table_name = [name[0] for name in self.__cursor.fetchall()]
@@ -50,38 +54,21 @@ class localDB:
 	@staticmethod
 	def expandList(*args) -> str:
 		if len(args) != 0:
-			return ', '.join(args(map(str, args)))
+			return ', '.join(list(map(str, args)))
 		else:
 			return '*'
 
 	@staticmethod
 	def expandDict(table: str, **kwargs) -> str:
 		if len(kwargs) != 0:
-			return '\n'.join([f'{"" if table == "" else f"{table}."}{name}={value}' for name, value in zip(dict.keys(), dict.values())])
+			return '\n'.join([f'{"" if table == "" else f"{table}."}{name}={value}' for name, value in zip(kwargs.keys(), kwargs.values())])
 		else:
 			return ''
-
-	# Validation
-	def validTable(self, func: Callable, table: str, *args, **kwargs):
-		def wrapper():
-			rawArg = inspect.getargvalues(func)[0]
-			if table not in self.__table_name:
-				raise ValueError(f'Table {table} not found.')
-			for name in args:
-				if name not in self.__table[table]:
-					raise ValueError(f'Name {name} not found.')
-			for name in kwargs.keys():
-				if name in rawArg:
-					continue
-				if name not in self.__table[table]:
-					raise ValueError(f'Name {name} not found.')
-			return func(table, *args, **kwargs)
-		return wrapper
 
 	# Color cache
 	def refreshColorCache(self) -> None:
 		raw = self.getFromTable('COLOR', all=True)
-		self.__colorCache = dict([pair[0] for pair in raw], [pair[1] for pair in raw])
+		self.__colorCache = dict(raw)
 
 	def colorExist(self, color: str) -> bool:
 		return color in self.__colorCache.values()
@@ -92,54 +79,72 @@ class localDB:
 	def getColor(self, id: int) -> str:
 		return self.__colorCache[id]
 
-	def setColor(self, color: str) -> int:
+	def setColor(self, color: str) -> None:
 		self.insertIntoTable('COLOR', color=color)
 		self.refreshColorCache()
 
 	# Basic io from database
-	@validTable
-	def getFromTable(self, table: str, *args, orderBy: str | None = None, all: bool = False, desc: bool = False, **kwargs) -> list:
-		nameStr = self.expandList(args)
-		condition = self.expandDict(table, kwargs)
+	def getFromTable(self, table: str, *args, orderBy: str | None = None, all: bool = False, desc: bool = True, **kwargs) -> list:
+		if table not in self.__table_name:
+			raise ValueError(f'Table {table} not found.')
+		for name in args:
+			if name not in self.__table[table]:
+				raise ValueError(f'Name {name} not found.')
+		for name in kwargs.keys():
+			if name not in self.__table[table]:
+				raise ValueError(f'Name {name} not found.')
+
+		nameStr = self.expandList(*args)
+		condition = self.expandDict(table, **kwargs)
 
 		self.__cursor.execute(f'''
 			select {nameStr}
 			from {table}
 			{'' if condition == '' else 'where '}{condition}
-			{f"order by {'desc' if desc else 'asc'}" if orderBy is not None else ''}
+			{f"order by {orderBy} {'desc' if desc else 'asc'}" if orderBy is not None else ''}
 		''')
 		if all:
 			return list(self.__cursor.fetchall())
 		else:
 			return list(self.__cursor.fetchone())
 
-	@validTable
 	def insertIntoTable(self, table: str, *args, **kwargs) -> None:
+		if table not in self.__table_name:
+			raise ValueError(f'Table {table} not found.')
+		for name in args:
+			if name not in self.__table[table]:
+				raise ValueError(f'Name {name} not found.')
+		for name in kwargs.keys():
+			if name not in self.__table[table]:
+				raise ValueError(f'Name {name} not found.')
+
 		if len(kwargs) != 0:
 			self.__cursor.execute(f'''
-				insert into {table} ({self.expandList(kwargs.keys())})
-				values ({self.expandList(kwargs.values())})
+				insert into {table} ({self.expandList(*kwargs.keys())})
+				values ({self.expandList(*kwargs.values())})
 			''')
 		elif len(args) != 0:
 			self.__cursor.execute(f'''
 				insert into {table}
-				values ({self.expandList(args.values())})
+				values ({self.expandList(*args)})
 			''')
 		self.__entity.commit()
 
-	@validTable
 	def updateToTable(self, table: str, condition: dict, updateValue: dict) -> None:
+		if table not in self.__table_name:
+			raise ValueError(f'Table {table} not found.')
 		for name in condition.keys():
 			if name not in self.__table[table]:
 				raise ValueError(f'Name {name} not found.')
 		for name in updateValue.keys():
 			if name not in self.__table[table]:
 				raise ValueError(f'Name {name} not found.')
+
 		if len(updateValue) != 0:
 			self.__cursor.execute(f'''
 				update {table}
-				set {self.expandDict('', updateValue)}
-				where {self.expandDict('', condition)}
+				set {self.expandDict('', **updateValue)}
+				where {self.expandDict('', **condition)}
 			''')
 		self.__entity.commit()
 
@@ -150,14 +155,17 @@ class localDB:
 
 	def getLocalQuery(self, id: int) -> query:
 		raw = self.getFromTable('QUERY', ID=id)
-		return query(raw[1:])
+		return query(*raw[1:])
 
-	def qqid2wgid(self, id: str | int) -> list[str]:
-		return [x[0] for x in self.getFromTable('USERS', 'ID', all=True, localID=id)]
+	def qqid2wgid(self, id: str | int, getDefault: bool = True) -> list[str]:
+		if getDefault:
+			return [x[0] for x in self.getFromTable('USERS', 'ID', all=True, localID=id, isDefault=True)]
+		else:
+			return [x[0] for x in self.getFromTable('USERS', 'ID', all=True, localID=id)]
 
-	def renewRecord(self, userID: int, renewEntity: dict[str, query], time: int) -> None:
-		lastInfoRaw = self.getFromTable('USER_INFO', *queryToGet, orderBy='queryTime', desc=True, userID=userID)
-		lastInfo = dict(queryToGet, [self.getLocalQuery(id) for id in lastInfoRaw])
+	def renewRecord(self, userID: int, renewEntity: dict[str, query], time: int, shipID: str = 'null') -> None:
+		lastInfoRaw = self.getFromTable('USER_INFO', *queryToGet, orderBy='queryTime', userID=userID, shipID=shipID)
+		lastInfo = dict(zip(queryToGet, [self.getLocalQuery(id) for id in lastInfoRaw]))
 
 		queryToRenew = []
 		for key, value in zip(renewEntity.keys(), renewEntity.values()):
@@ -166,21 +174,34 @@ class localDB:
 
 		if len(queryToRenew) == 0:
 			# Nothing to renew, only update the timestamp
-			self.updateToTable('USER_INFO', dict(queryToGet, lastInfoRaw), {'queryTime': time})
+			self.updateToTable('USER_INFO', dict(zip(queryToGet, lastInfoRaw)), {'queryTime': time})
 		else:
 			# At least one record need update
 			for renew in queryToRenew:
-				renewDict = dict([name for name in query.dir() if not (name.startswith('__') and name.endswith('__'))], renewEntity[renew])
+				renewDict = renewEntity[renew].__dict__
 				self.insertIntoTable('QUERY', **renewDict)
-				lastInfo[renew] = self.getLocalQueryId(**renewDict)
+				lastInfo[renew] = self.getLocalQueryId(**renewDict)[0]
 
 			for key, value in zip(lastInfo.keys(), lastInfo.values()):
 				if isinstance(value, query):
-					lastInfo[key] = self.getLocalQueryId(**value.__dict__())
+					lastInfo[key] = self.getLocalQueryId(**value.__dict__)[0]
 
-			self.insertIntoTable('USER_INFO', **lastInfo)
+			self.insertIntoTable('USER_INFO', **lastInfo, queryTime=time)
 		self.__entity.commit()
 
+	# Top level io
+	def getInfo(self, qqId: str | int):
+		wgid = self.qqid2wgid(qqId)
+		records = self.getFromTable('USER_INFO', orderBy='queryTime', userID=wgid, shipID='null')
+
+	def getShipInfo(self, qqId: str | int, shipId: str | int):
+		pass
+
+	def getRecent(self, qqId: str | int, timeBack: int):
+		pass
+
+	def getShipRecent(self, qqId: str | int, shipId: str | int, timeBack: int):
+		pass
 
 queryToGet = ['totalQueryID', 'soloQueryID', 'twoQueryID', 'threeQueryID', 'rankQueryID', 'bbQueryID', 'crQueryID', 'ddQueryID', 'cvQueryID', 'ssQueryID']
 
@@ -193,7 +214,6 @@ def resolveShinoakiAPI(data: dict, db: localDB) -> dict[str, query]:
 		return query(
 			data['battles'],
 			data['pr']['value'],
-			data['wins'],
 			data['damage'],
 			db.getColorId(data['damageData']['color']),
 			data['wins'],
@@ -217,23 +237,31 @@ def resolveShinoakiAPI(data: dict, db: localDB) -> dict[str, query]:
 	return resultDict
 
 # Running in another thread
-def queryTimer(db: localDB, timegap: int = 15,
-	url: LiteralString = 'https://api.wows.shinoaki.com',
-	queryUserInfo: LiteralString = 'public/wows/account/user/info',
+class queryRequester:
+	db: localDB
+	timegap: int = 1
+	url: LiteralString = 'https://api.wows.shinoaki.com'
+	queryUserInfo: LiteralString = 'public/wows/account/user/info'
 	resolver: Callable[[dict, localDB], dict[str, query]] = resolveShinoakiAPI
-):
-	while(True):
-		users = db.getFromTable('USERS', 'ID', 'serverName', all=True)
 
-		for user in users:
-			getParam = {
-				'accountID': user[0],
-				'server': user[1]
-			}
-			with httpx.Client(headers=headers) as client:
-				raw = client.get(url=url + queryUserInfo, params=getParam)
-				result = raw.json()
-				entity = resolver(result['data'], db)
-				db.renewRecord(user[0], entity, result['queryTime'])
+	@staticmethod
+	def request():
+		while(True):
+			users = queryRequester.db.getFromTable('USERS', 'ID', 'serverName', all=True)
 
-		time.sleep(60 * timegap)
+			for user in users:
+				getParam = {
+					'accountID': user[0],
+					'server': user[1]
+				}
+				with httpx.Client(headers=headers) as client:
+					raw = client.get(url=queryRequester.url + queryRequester.queryUserInfo, params=getParam)
+					result = raw.json()
+					entity = queryRequester.resolver(result['data'], db)
+					queryRequester.db.renewRecord(user[0], entity, result['queryTime'])
+
+			time.sleep(60 * queryRequester.timegap)
+
+if __name__ == '__main__':
+    testDB = localDB()
+    queryRequester.db = testDB

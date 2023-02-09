@@ -1,31 +1,37 @@
-import traceback
-import nonebot.adapters.onebot.v11
-from loguru import logger
-from nonebot import on_command, on_message, on_fullmatch, get_driver
-from nonebot.params import CommandArg
-from nonebot.permission import SUPERUSER
-from nonebot.adapters.onebot.v11 import Message, MessageSegment,MessageEvent,Bot,ActionFailed,GroupMessageEvent,PrivateMessageEvent
-from nonebot_plugin_guild_patch import GuildMessageEvent
-from nonebot.log import logger
-from .wws_ship import ShipSecletProcess
-from .wws_clan import ClanSecletProcess
-from .utils import DailyNumberLimiter,FreqLimiter,get_bot,download
-from .data_source import nb2_file
-from .command_select import select_command
-from .mqtt import mqtt_run
-from .game.pupu import get_pupu_msg
-from .game.ocr import pic2txt_byOCR,upload_OcrResult,downlod_OcrResult
-from nonebot_plugin_htmlrender import text_to_pic
-from pathlib import Path
-import httpx
-import json
 import asyncio
-import re
 import html
+import json
 import os
 import platform
+import re
 import sys
-from nonebot import require
+import threading
+import traceback
+from pathlib import Path
+
+import httpx
+import nonebot.adapters.onebot.v11
+from loguru import logger
+from nonebot import get_driver, on_command, on_fullmatch, on_message, require
+from nonebot.adapters.onebot.v11 import (ActionFailed, Bot, GroupMessageEvent,
+                                         Message, MessageEvent, MessageSegment,
+                                         PrivateMessageEvent)
+from nonebot.log import logger
+from nonebot.params import CommandArg
+from nonebot.permission import SUPERUSER
+from nonebot_plugin_guild_patch import GuildMessageEvent
+from nonebot_plugin_htmlrender import text_to_pic
+
+from .command_select import select_command
+from .data_source import nb2_file
+from .game.ocr import downlod_OcrResult, pic2txt_byOCR, upload_OcrResult
+from .game.pupu import get_pupu_msg
+from .localDatabase import localDB, queryRequester
+from .mqtt import mqtt_run
+from .utils import DailyNumberLimiter, FreqLimiter, download, get_bot
+from .wws_clan import ClanSecletProcess
+from .wws_ship import ShipSecletProcess
+
 scheduler = require("nonebot_plugin_apscheduler").scheduler
 
 _max = 100
@@ -44,6 +50,10 @@ bot_update = on_command("wws 更新Hikari",priority=5,block=False,permission=SUP
 bot_listen = on_message(priority=5,block=False)
 ocr_listen = on_message(priority=6,block=False)
 driver = get_driver()
+
+mainLocalDB = localDB()
+queryRequester.db = mainLocalDB
+threading.Thread(None, queryRequester.request, 'databaseRenewer', [mainLocalDB])
 
 @bot.handle()
 async def main(bot:Bot, ev:MessageEvent, matchmsg: Message = CommandArg()):
@@ -70,7 +80,7 @@ async def main(bot:Bot, ev:MessageEvent, matchmsg: Message = CommandArg()):
             await bot.send(ev,'您冲得太快了，请稍候再冲', at_sender=True)
             return False
         _flmt.start_cd(qqid)
-        _nlmt.increase(qqid) 
+        _nlmt.increase(qqid)
         searchtag = html.unescape(str(matchmsg)).strip()
         if not searchtag:
             await bot.send(ev,"请发送wws help查看相关帮助")
@@ -110,7 +120,7 @@ async def main(bot:Bot, ev:MessageEvent, matchmsg: Message = CommandArg()):
     except Exception:
         logger.error(traceback.format_exc())
         await bot.send(ev,'呜呜呜发生了错误，可能是网络问题，如果过段时间不能恢复请联系麻麻哦~')
-             
+
 async def send_bot_help():
     try:
         url = 'https://benx1n.oss-cn-beijing.aliyuncs.com/version.json'
@@ -128,7 +138,7 @@ async def send_bot_help():
     except Exception:
         logger.warning(traceback.format_exc())
         return 'wuwuwu出了点问题，请联系麻麻解决'
-    
+
 @bot_listen.handle()
 async def change_select_state(ev:MessageEvent):
     try:
@@ -146,11 +156,11 @@ async def change_select_state(ev:MessageEvent):
                 ClanSecletProcess[qqid] = ClanSecletProcess[qqid]._replace(state = True)
                 ClanSecletProcess[qqid] = ClanSecletProcess[qqid]._replace(SlectIndex = int(msg))
             else:
-                await bot.send(ev,'请选择列表中的序号哦~') 
+                await bot.send(ev,'请选择列表中的序号哦~')
     except Exception:
         logger.warning(traceback.format_exc())
         return
-    
+
 @ocr_listen.handle()
 async def OCR_listen(bot:Bot, ev:MessageEvent):
     try:
@@ -175,7 +185,7 @@ async def OCR_listen(bot:Bot, ev:MessageEvent):
     except Exception:
         logger.error(traceback.format_exc())
         return
-    
+
 
 @bot_update.handle()
 async def update_Hikari(ev:MessageEvent,bot:Bot):
@@ -198,7 +208,7 @@ async def update_Hikari(ev:MessageEvent,bot:Bot):
                 for child in multiprocessing.active_children():
                     child.terminate()
                 sys.stdout.flush()
-                #not compatible with cmdline with '\n' 
+                #not compatible with cmdline with '\n'
                 os.execv(os.readlink('/proc/self/exe'), open('/proc/self/cmdline', 'rb').read().replace(b'\0', b'\n').decode().split('\n')[:-1])
             except Exception:
                 logger.error(traceback.format_exc())
@@ -245,7 +255,7 @@ async def check_version():
     except Exception:
         logger.warning(traceback.format_exc())
         return
-        
+
 @driver.on_startup
 async def startup():
     try:
@@ -262,8 +272,8 @@ async def startup():
         await downlod_OcrResult()
     except Exception:
         logger.error(traceback.format_exc())
-        return   
-    
+        return
+
 @driver.on_bot_connect
 async def remind(bot: Bot):
     superid = driver.config.superusers
@@ -280,7 +290,7 @@ async def startup_download(url,name):
         resp = resp = await client.get(url, timeout=20)
         with open(template_path/name , "wb+") as file:
             file.write(resp.content)
-            
+
 scheduler.add_job(
     check_version,
     "cron",
@@ -312,4 +322,3 @@ async def send_pupu_msg(ev:MessageEvent,bot:Bot):
         except Exception:
             pass
         return
-    

@@ -1,6 +1,6 @@
 -- Enum table
 create table if not exists COLOR(
-	colorID integer not null autoincrement,
+	colorID integer not null,
 	color CHAR(8) unique,
 
 	primary key(colorID)
@@ -19,7 +19,7 @@ create table if not exists CLANS(
 	color int not null,
 
 	primary key(ID),
-	foreign key(color) references COLOR.colorID
+	foreign key(color) references COLOR (colorID)
 );
 -- Table for QQ info
 create table if not exists LOCAL_USERS(
@@ -35,25 +35,25 @@ create table if not exists USERS(
 	userName VARCHAR(64) not null,
 	serverName VARCHAR(16) not null,
 	clanID int not null,
+	isDefault boolean not null,
 
 	primary key(ID),
-	foreign key(clanID) references CLANS.ID,
-	foreign key(prColor) references COLOR.colorID,
-	foreign key(localID) references LOCAL_USERS.ID
+	foreign key(clanID) references CLANS (ID),
+	foreign key(localID) references LOCAL_USERS (ID)
 );
 create table if not exists SHIPS(
-	ID integer not null autoincrement,
+	ID integer not null,
 	userID int not null,
 	shipID int not null,
 
 	primary key(ID),
-	foreign key(userID) references USERS.ID,
-	foreign key(shipID) references SHIP.shipID
+	foreign key(userID) references USERS (ID),
+	foreign key(shipID) references SHIP (shipID)
 );
 -- Insert each query, used by user query, ship query and recent query
 create table if not exists QUERY(
 	-- Stable info
-	ID integer not null autoincrement,
+	ID integer not null,
 	-- battleCount info
 	battleCount int not null,
 	-- PR info
@@ -71,11 +71,11 @@ create table if not exists QUERY(
 
 	queryTime int not null,
 
-	primary key(ID, queryType, queryTime),
-	foreign key(battleCountColor, damageColor, winRateColor) references COLOR.colorID
+	primary key(ID, queryTime),
+	foreign key(damageColor, winRateColor) references COLOR (colorID, colorID)
 );
 create table if not exists USER_INFO(
-	queryID integer not null autoincrement,
+	queryID integer not null,
 	queryTime int not null,
 	userID int not null,
 	-- NULL if it represents total info
@@ -96,7 +96,7 @@ create table if not exists USER_INFO(
 	ssQueryID int,
 
 	primary key(queryID),
-	foreign key(userID) references USERS.ID,
+	foreign key(userID) references USERS (ID),
 	foreign key(
 		totalQueryID,
 		soloQueryID,
@@ -108,7 +108,18 @@ create table if not exists USER_INFO(
 		ddQueryID,
 		cvQueryID,
 		ssQueryID
-	) references QUERY.ID
+	) references QUERY (
+		ID,
+		ID,
+		ID,
+		ID,
+		ID,
+		ID,
+		ID,
+		ID,
+		ID,
+		ID
+	)
 );
 
 create index if not exists user_index
