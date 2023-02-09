@@ -90,6 +90,8 @@ QQ频道官方机器人已上线，请点击上方链接加入体验~
 ## 在Windows系统上快速部署
 >点我查看[视频教程](https://www.bilibili.com/video/BV1r5411X7pr)
 
+  `windows安装python版本请勿大于3.11,建议版本3.9`
+
 1. 下载Hikari的[最新Release](https://github.com/benx1n/HikariBot/releases/download/Latest/release_windows.zip)并解压到合适文件夹
 2. 复制一份`.env.prod-example`文件，并将其重命名为`.env.prod`,打开并按其中注释编辑
     >只显示了.env，没有后面的后缀？请百度`windows如何显示文件后缀名`
@@ -214,8 +216,8 @@ wget -qO - http://www.dddns.icu/installHikari.sh | bash
     ```
 2. 在bot的bot.py中加入
     ```
-    nonebot.load_plugin('hikari_bot')
     nonebot.load_plugin('nonebot_plugin_htmlrender')
+    nonebot.load_plugin('hikari_bot')
     ```
 3. 在环境文件中加入以下配置项
     ```
@@ -264,6 +266,15 @@ wget -qO - http://www.dddns.icu/installHikari.sh | bash
       - 群聊默认开启，默认屏蔽官方交流群
 
 ## 最近的更新日志
+
+### 22-11-18    v0.3.6  包含配置项更新，请添加`env.prod-example`中新增的配置
+- [+]新增噗噗（已于0.3.5.2实装）
+- [+]新增OCR（已于0.3.5.5实装）
+- [+]新增扫雪统计和圣诞船池检查
+- [+]新增国服排行榜
+- [#]大幅优化高峰期响应速度（已于0.3.5.3实装）
+- [#]Linux下支持微软雅黑(已热更新)
+
 ### 22-10-29    v0.3.5.5  添加测试功能OCR，支持图片指令
 ### 22-10-27    v0.3.5.4  修复一键更新指令bug
 ### 22-10-26    v0.3.5.3  添加缓存上报机制，修复噗噗误触发的bug
@@ -293,6 +304,9 @@ wget -qO - http://www.dddns.icu/installHikari.sh | bash
 - [#]info适配v4接口
 - [+]新增配置项ban_group_list
 
+<details>
+<summary><b>更以前的更新日志</b></summary>
+
 ### 22-07-05    v0.3.2.2  一些修复
 - [#]修复切换、删除绑定的bug
 - [#]默认配置改为不启用WEB登陆验证
@@ -306,10 +320,6 @@ wget -qO - http://www.dddns.icu/installHikari.sh | bash
 - [+]新增PR彩蛋
 - [#]info适配V3接口
 - [#]recent显示时间区间
-
-
-<details>
-<summary><b>更以前的更新日志</b></summary>
 
 ### 22-06-23    v0.3.1  **重要功能更新**
 - [+]新增单船近期战绩，可显示每日详细信息，指令`wws ship recent`
@@ -454,6 +464,7 @@ wget -qO - http://www.dddns.icu/installHikari.sh | bash
     USE_PLUGIN_GO_CQHTTP = false
     ```
 5. 在文件夹下打开终端，输入`python bot.py`启动bot
+    - 一键包双击`启动.bat`即可
 
 
 ### 出现ZoneInfoNotFoundError报错
@@ -511,17 +522,22 @@ wget -qO - http://www.dddns.icu/installHikari.sh | bash
 
     > 您需要根据自己的机器架构选择版本，Windows一般为x86/64架构，通常选择[go-cqhttp_windows_386.exe](https://github.com/Mrs4s/go-cqhttp/releases/download/v1.0.0-rc1/go-cqhttp_windows_386.exe)
 
-2. 重命名为`go-cqhttp.exe`并放入`HikariBot\accounts\binary`文件夹下
+2. 重命名为`go-cqhttp.*`(*为所选择版本后缀,如windowx就是go-cqhttp.exe)并放入`HikariBot\accounts\binary`文件夹下
 
 3. 重新启动Hikari
 
 
+## 贡献
 
-## 感谢以下项目的支持（排名不分先后）
+感谢以下开发者及项目做出的贡献与支持
 
-[Nonebot2](https://github.com/nonebot/nonebot2)
-[go-cqhttp](https://github.com/Mrs4s/go-cqhttp)
-[战舰世界API平台](https://wows.shinoaki.com/)
+<a href="https://github.com//benx1n/HikariBot/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=benx1n/HikariBot" />
+</a>
+
+[Nonebot2](https://github.com/nonebot/nonebot2)  
+[go-cqhttp](https://github.com/Mrs4s/go-cqhttp)  
+[战舰世界API平台](https://wows.shinoaki.com/)  
 
 ## 开源相关
 MIT
