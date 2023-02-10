@@ -12,7 +12,7 @@ from pathlib import Path
 import httpx
 import nonebot.adapters.onebot.v11
 from loguru import logger
-from nonebot import get_driver, on_command, on_fullmatch, on_message, require
+from nonebot import get_driver, get_bot, on_command, on_fullmatch, on_message, require
 from nonebot.adapters.onebot.v11 import (ActionFailed, Bot, GroupMessageEvent,
                                          Message, MessageEvent, MessageSegment,
                                          PrivateMessageEvent)
@@ -51,9 +51,7 @@ bot_listen = on_message(priority=5,block=False)
 ocr_listen = on_message(priority=6,block=False)
 driver = get_driver()
 
-mainLocalDB = localDB()
-queryRequester.db = mainLocalDB
-threading.Thread(None, queryRequester.request, 'databaseRenewer', [mainLocalDB])
+renewer = None
 
 @bot.handle()
 async def main(bot:Bot, ev:MessageEvent, matchmsg: Message = CommandArg()):
@@ -274,12 +272,28 @@ async def startup():
         logger.error(traceback.format_exc())
         return
 
+    mainLocalDB = await localDB()
+    queryRequester.db = mainLocalDB
+
+
+@driver.on_shutdown
+async def shutdown():
+    global renewer
+    if (renewer.is_alive()):
+        queryRequester.shouldRunning = False
+
 @driver.on_bot_connect
 async def remind(bot: Bot):
     superid = driver.config.superusers
     bot_info = await bot.get_login_info()
     for each in superid:
         await bot.send_private_msg(user_id=int(each),message=f"Hikari已上线，当前版本{__version__}")
+
+    # Refresh QQ user list
+    groupList = await bot.get_group_list()
+    print(groupList)
+    # mainLocalDB.refreshQQUsers()
+
     #global is_first_run
     #if is_first_run:
     #    mqtt_run(bot_info['user_id'])
