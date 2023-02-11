@@ -2,14 +2,14 @@ import asyncio
 import dataclasses
 import enum
 import time
-from typing import Any, Callable, LiteralString
+from typing import Any, LiteralString
 
 import aiomysql as sql
 import httpx
 from nonebot import get_driver
 
 headers = {
-    #'Authorization': get_driver().config.api_token
+    'Authorization': get_driver().config.api_token
 }
 
 @dataclasses.dataclass()
@@ -23,6 +23,149 @@ class query:
     kdRate: float
     hitRate: float
 
+# Convert Python type into SQL type
+def convertor(value) -> str:
+    if isinstance(value, bool):
+        return str(int(value))
+    elif isinstance(value, int):
+        return str(value)
+    elif isinstance(value, float):
+        return f'{value:.2}'
+    else:
+        return f'"{value}"'
+
+class condition(object):
+
+    def __init__(self, name: str, value: str, connector: str):
+        self.__final = name + connector + value
+
+    # Use some magic to convert operator into actual string
+    # Turn + to 'and'
+    def __iand__(self, another):
+        self.__final = '(' + self.__final + ' and ' + another.__final + ')'
+    # Turn | to 'or'
+    def __or__(self, another):
+        self.__final = '(' + self.__final + ' or ' + another.__final + ')'
+
+    def __str__(self):
+        return self.__final
+    __repr__ = __str__
+
+class column(object):
+
+    def __init__(self, name: str):
+        self.__name = name
+
+    # Use some magic to convert operator into actual string
+    def __lt__(self, value):
+        return condition(self.__name, convertor(value), '<')
+    def __gt__(self, value):
+        return condition(self.__name, convertor(value), '>')
+    def __le__(self, value):
+        return condition(self.__name, convertor(value), '<=')
+    def __ge__(self, value):
+        return condition(self.__name, convertor(value), '>=')
+    def __eq__(self, value):
+        return condition(self.__name, convertor(value), '=')
+    def __ne__(self, value):
+        return condition(self.__name, convertor(value), '!=')
+
+    def __str__(self):
+        return self.__name
+    __repr__ = __str__
+
+class table(object):
+
+    def __init__(self, name: str, columns: list[str], database):
+        self.__name = name
+        self.__columns = columns
+        self.__columns_entity = dict(zip(self.__columns, [column(x) for x in self.__columns]))
+        self.__database = database
+
+    # Request for column
+    def __getattr__(self, __name: str) -> Any:
+        if __name in self.__columns:
+            return self.__columns_entity[__name]
+
+    # Basic convert, turning list to comma-seperated string
+    @staticmethod
+    def __construct(values: list[column]) -> str:
+        return ', '.join(values)
+
+    # Four common usage to turn combined-data into string
+    @staticmethod
+    def make_conditions(arg: list) -> str:
+        conditions = [x for x in arg if isinstance(x, condition)]
+        finalCondition = None
+        if len(conditions) != 0:
+            finalCondition = conditions[0]
+            for single in conditions[1:]:
+                finalCondition += single
+        return str(finalCondition)
+
+    def make_columns(self, arg: list) -> str:
+        cols = []
+        for name in arg:
+            if name in self.__columns:
+                cols.append(name)
+        return self.__construct(cols)
+
+    def make_pairs(self, kwarg: dict[str, Any]) -> tuple[str, str]:
+        pairs = dict()
+        for columnName in kwarg.keys():
+            if columnName in self.__columns:
+                pairs[columnName] = (self.__columns_entity[columnName], kwarg[columnName])
+        finalPairs = zip(*pairs.values())
+        return (str(self.__construct(finalPairs[0])), str(self.__construct(finalPairs[0])))
+
+    def make_assigns(self, kwarg: dict[str, Any]) -> str:
+        pairs = []
+        for columnName in kwarg.keys():
+            if columnName in self.__columns:
+                pairs.append(f'{columnName}={convertor(kwarg[columnName])}')
+        return ', '.join(pairs)
+
+    async def __run(self, command: str):
+        await self.__database.execute(command)
+        await self.__database.commit()
+
+    # Basic SQL command convertor
+    async def select(self, *arg, orderby: column | None = None, all: bool = False, asc: bool = False):
+        col = self.make_columns(arg)
+        cod = self.make_conditions(arg)
+        order = self.make_columns([orderby])
+        command = f'select {"*" if len(col) == 0 else f"({col})"} from {self.__name}{"" if cod is None else f"where ({cod})"}{"" if orderby is None else f" order by {order}"};'
+        await self.__run(command)
+
+    async def insert(self, **kwarg):
+        pairs = self.make_pairs(kwarg)
+        command = f'insert into {self.__name} ({pairs[0]}) values ({pairs[1]});'
+        await self.__run(command)
+
+    async def update(self, *arg, **kwarg):
+        cod = self.make_conditions(arg)
+        assigns = self.__make_assigns(kwarg)
+        command = f'update {self.__name} sets ({assigns}) where ({cod});'
+        await self.run(command)
+
+    async def delete(self, *arg):
+        cod = self.make_conditions(arg)
+        command = f'delete from {self.__name} where ({cod});'
+        await self.__run(command)
+
+# Cache for some small table
+class cache(object):
+
+    def __init__(self, target: table):
+        self.__target = target
+
+        self.__cache = target.select()
+
+    def get(self, *arg):
+        pass
+
+    def put(self, **kwargs):
+        pass
 
 class localDB(object):
     DB_NAME = 'hikari_recent_db'
@@ -71,25 +214,41 @@ class localDB(object):
                 self.INIT_SQL = file.read()
             await self.cursor.execute(self.INIT_SQL)
 
+            # Get all table name
             await self.cursor.execute(f'select table_name from information_schema.tables where table_schema="{self.DB_NAME}";')
             self.table_name = [x[0] for x in await self.cursor.fetchall()]
-            self.tables = enum.Enum('tables', dict(zip(self.table_name, self.table_name)))
-
-            self.table = {}
+            # Get all column name for each table
+            self.table = dict()
             for name in self.table_name:
                 await self.cursor.execute(f'select column_name from information_schema.columns where table_name="{name}";')
                 self.table[name] = [x[0] for x in await self.cursor.fetchall()]
-                self.tables[name].columns = enum.Enum(f'{name}_columns', dict(zip(self.table[name], self.table[name])))
 
+            # Gen table object
+            self.tables = dict()
+            for singleTable in self.table_name:
+                self.tables[singleTable] = table(singleTable, self.table[singleTable], self)
 
+            # We don't need to verify it here, so delete it
+            del self.table
 
+            # Fetch the color for cache
             await self.refreshColorCache()
+
+        # Return the object created
         return self
 
     async def destroy(self):
         await self.cursor.close()
         await self.entity.ensure_closed()
 
+
+    async def execute(self, command: str):
+        await self.cursor.execute(command)
+
+    async def commit(self):
+        await self.entity.commit()
+
+# Out of date
     @staticmethod
     def converter(value: Any) -> str:
         if isinstance(value, bool):
@@ -277,14 +436,16 @@ class localDB(object):
 
     # Top level io
     async def getInfo(self, qqId: str, shipId: int = None) -> dict:
-        wgid = self.qqid2wgid(qqId)
+        wgid = (await self.qqid2wgid(qqId))[0]
         queryRequester.query()
         records = await self.getFromTable('USER_INFO', *queryToGet, 'clanID', orderBy='queryTime', userID=wgid, shipID=shipId)
-        records = dict(zip(queryToGet + ['clanID'], [await self.getLocalQuery(id) for id in records[0:-1]] + [records[-1]]))
+        records = dict(zip(queryToGet + ['clanID'], [await self.getLocalQuery(id) for id in records[:-1]] + [records[-1]]))
         return await self.constructer(records)
 
     async def getRecent(self, qqId: str, shipId: int = None, timeBack: int = 1) -> dict:
-        pass
+        wgid = (await self.qqid2wgid(qqId))[0]
+        queryRequester.query()
+        records = await self.getFromTable('USER_INFO', *queryToGet, 'clanID', orderBy='queryTime', userID=wgid, shipID=shipId)
 
     async def refreshQQUsers(self, userList: dict[str, str]) -> None:
         userListLocal = [x[0] for x in await self.getFromTable('LOCAL_USERS', 'ID', all=True)]
