@@ -5,14 +5,15 @@ import os
 import platform
 import re
 import sys
-import threading
+import time
 import traceback
 from pathlib import Path
 
 import httpx
 import nonebot.adapters.onebot.v11
 from loguru import logger
-from nonebot import get_driver, get_bot, on_command, on_fullmatch, on_message, require
+from nonebot import (get_bot, get_driver, on_command, on_fullmatch, on_message,
+                     require)
 from nonebot.adapters.onebot.v11 import (ActionFailed, Bot, GroupMessageEvent,
                                          Message, MessageEvent, MessageSegment,
                                          PrivateMessageEvent)
@@ -51,6 +52,7 @@ bot_listen = on_message(priority=5,block=False)
 ocr_listen = on_message(priority=6,block=False)
 driver = get_driver()
 
+mainLocalDB: localDB = None
 renewer = None
 
 @bot.handle()
@@ -272,15 +274,20 @@ async def startup():
         logger.error(traceback.format_exc())
         return
 
-    mainLocalDB = await localDB()
+@driver.on_startup
+async def initDatabase():
+    global mainLocalDB
+    mainLocalDB = await localDB.factory()
     queryRequester.db = mainLocalDB
+    asyncio.create_task(queryRequester.startQueryLoop(), name='request')
 
 
 @driver.on_shutdown
-async def shutdown():
-    global renewer
-    if (renewer.is_alive()):
+async def shutdownDatabase():
+    if mainLocalDB is not None:
         queryRequester.shouldRunning = False
+        await mainLocalDB.destroy()
+
 
 @driver.on_bot_connect
 async def remind(bot: Bot):
@@ -289,19 +296,27 @@ async def remind(bot: Bot):
     for each in superid:
         await bot.send_private_msg(user_id=int(each),message=f"Hikari已上线，当前版本{__version__}")
 
-    # Refresh QQ user list
-    groupList = await bot.get_group_list()
-    print(groupList)
-    # mainLocalDB.refreshQQUsers()
-
     #global is_first_run
     #if is_first_run:
     #    mqtt_run(bot_info['user_id'])
     #    is_first_run = False
 
+@driver.on_bot_connect
+async def datebaseRefresh(bot: Bot):
+    # Refresh QQ user list
+    groupList = await bot.get_group_list()
+    userList = {}
+    for group in groupList:
+        singleList = await bot.get_group_member_list(group_id=group['group_id'])
+        for user in singleList:
+            userList[str(user['user_id'])] = user['nickname']
+    await mainLocalDB.refreshQQUsers(userList)
+    # mainLocalDB.loop.run_until_complete()
+
+
 async def startup_download(url,name):
     async with httpx.AsyncClient() as client:
-        resp = resp = await client.get(url, timeout=20)
+        resp = await client.get(url, timeout=20)
         with open(template_path/name , "wb+") as file:
             file.write(resp.content)
 

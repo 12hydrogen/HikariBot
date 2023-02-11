@@ -1,6 +1,6 @@
 -- Enum table
 create table if not exists COLOR(
-	colorID integer not null,
+	colorID int not null auto_increment,
 	color CHAR(8) unique,
 
 	primary key(colorID)
@@ -15,15 +15,15 @@ create table if not exists SHIP(
 -- Stable table
 create table if not exists CLANS(
 	ID int not null,
-	tag VARCHAR(16) not null,
-	color int not null,
+	tag VARCHAR(16),
+	color int,
 
 	primary key(ID),
 	foreign key(color) references COLOR (colorID)
 );
 -- Table for QQ info
 create table if not exists LOCAL_USERS(
-	ID int not null,
+	ID VARCHAR(32) not null,
 	userName VARCHAR(64) not null,
 
 	primary key(ID)
@@ -31,7 +31,7 @@ create table if not exists LOCAL_USERS(
 -- Table for WG info
 create table if not exists USERS(
 	ID int not null,
-	localID int not null,
+	localID VARCHAR(32) not null,
 	userName VARCHAR(64) not null,
 	serverName VARCHAR(16) not null,
 	clanID int not null,
@@ -42,7 +42,7 @@ create table if not exists USERS(
 	foreign key(localID) references LOCAL_USERS (ID)
 );
 create table if not exists SHIPS(
-	ID integer not null,
+	ID int not null,
 	userID int not null,
 	shipID int not null,
 
@@ -53,7 +53,7 @@ create table if not exists SHIPS(
 -- Insert each query, used by user query, ship query and recent query
 create table if not exists QUERY(
 	-- Stable info
-	ID integer not null,
+	ID int not null auto_increment,
 	-- battleCount info
 	battleCount int not null,
 	-- PR info
@@ -62,20 +62,19 @@ create table if not exists QUERY(
 	damage int not null,
 	damageColor int not null,
 	-- winRate info
-	winRate float not null,
+	winRate decimal(10, 4) not null,
 	winRateColor int not null,
 	-- kd
-	kdRate float not null,
+	kdRate decimal(10, 4) not null,
 	-- hit
-	hitRate float not null,
+	hitRate decimal(10, 4) not null,
 
-	queryTime int not null,
-
-	primary key(ID, queryTime),
-	foreign key(damageColor, winRateColor) references COLOR (colorID, colorID)
+	primary key(ID),
+	foreign key(damageColor) references COLOR (colorID),
+	foreign key(winRateColor) references COLOR (colorID)
 );
 create table if not exists USER_INFO(
-	queryID integer not null,
+	queryID int not null,
 	queryTime int not null,
 	userID int not null,
 	-- NULL if it represents total info
@@ -97,33 +96,50 @@ create table if not exists USER_INFO(
 
 	primary key(queryID),
 	foreign key(userID) references USERS (ID),
-	foreign key(
-		totalQueryID,
-		soloQueryID,
-		twoQueryID,
-		threeQueryID,
-		rankQueryID,
-		bbQueryID,
-		crQueryID,
-		ddQueryID,
-		cvQueryID,
-		ssQueryID
-	) references QUERY (
-		ID,
-		ID,
-		ID,
-		ID,
-		ID,
-		ID,
-		ID,
-		ID,
-		ID,
-		ID
-	)
+	foreign key(totalQueryID) references QUERY (ID),
+	foreign key(soloQueryID) references QUERY (ID),
+	foreign key(twoQueryID) references QUERY (ID),
+	foreign key(threeQueryID) references QUERY (ID),
+	foreign key(rankQueryID) references QUERY (ID),
+	foreign key(bbQueryID) references QUERY (ID),
+	foreign key(crQueryID) references QUERY (ID),
+	foreign key(ddQueryID) references QUERY (ID),
+	foreign key(cvQueryID) references QUERY (ID),
+	foreign key(ssQueryID) references QUERY (ID)
 );
 
-create index if not exists user_index
-on USER_INFO (userID, shipID);
+DROP PROCEDURE IF EXISTS add_index;
+CREATE PROCEDURE add_index()
+BEGIN
+DECLARE  target_database VARCHAR(100);
+DECLARE  target_table_name VARCHAR(100);
+DECLARE  target_column_name VARCHAR(100);
+DECLARE  target_index_name VARCHAR(100);
+set target_table_name = 'USER_INFO';
+set target_index_name = 'user_index';
+SELECT DATABASE() INTO target_database;
+IF NOT EXISTS (SELECT * FROM information_schema.statistics WHERE table_schema = target_database AND table_name = target_table_name AND index_name = target_index_name) THEN
+    set @statement = "alter table `USER_INFO` add UNIQUE KEY user_index (userID, shipID)";
+    PREPARE STMT FROM @statement;
+    EXECUTE STMT;
+END IF;
+END;
+CALL add_index();
 
-create index if not exists query_index
-on QUERY (ID);
+DROP PROCEDURE IF EXISTS add_index;
+CREATE PROCEDURE add_index()
+BEGIN
+DECLARE  target_database VARCHAR(100);
+DECLARE  target_table_name VARCHAR(100);
+DECLARE  target_column_name VARCHAR(100);
+DECLARE  target_index_name VARCHAR(100);
+set target_table_name = 'QUERY';
+set target_index_name = 'query_index';
+SELECT DATABASE() INTO target_database;
+IF NOT EXISTS (SELECT * FROM information_schema.statistics WHERE table_schema = target_database AND table_name = target_table_name AND index_name = target_index_name) THEN
+    set @statement = "alter table `QUERY` add UNIQUE KEY query_index (ID)";
+    PREPARE STMT FROM @statement;
+    EXECUTE STMT;
+END IF;
+END;
+CALL add_index();
