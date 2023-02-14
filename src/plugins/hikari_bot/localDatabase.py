@@ -1,15 +1,14 @@
 import asyncio
 import dataclasses
-import enum
 import time
-from typing import Any, LiteralString
+from typing import Any
 
 import aiomysql as sql
 import httpx
 from nonebot import get_driver
 
 headers = {
-    'Authorization': get_driver().config.api_token
+    # 'Authorization': get_driver().config.api_token # YUJI API key
 }
 
 @dataclasses.dataclass()
@@ -24,28 +23,47 @@ class query:
     hitRate: float
 
 # Convert Python type into SQL type
-def convertor(value) -> str:
+def convertor(value, withQuote: bool = True) -> str:
     if isinstance(value, bool):
         return str(int(value))
     elif isinstance(value, int):
         return str(value)
+    elif isinstance(value, column):
+        return str(value)
+    elif isinstance(value, condition):
+        return str(value)
     elif isinstance(value, float):
-        return f'{value:.2}'
-    else:
+        return f'{value:.2f}'
+    elif withQuote:
         return f'"{value}"'
-
+    else:
+        return str(value)
 class condition(object):
 
-    def __init__(self, name: str, value: str, connector: str):
-        self.__final = name + connector + value
+    def __init__(self, partA: Any, partB: Any, connector: str):
+        self.A = partA
+        self.B = partB
+        self.mid = connector
+        if (partB is None):
+            self.__final = convertor(partA, False) + ' is null'
+        else:
+            self.__final = convertor(partA, False) + connector + convertor(partB)
 
     # Use some magic to convert operator into actual string
-    # Turn + to 'and'
-    def __iand__(self, another):
-        self.__final = '(' + self.__final + ' and ' + another.__final + ')'
+    # Turn & to 'and'
+    def __and__(self, another):
+        if isinstance(another, condition):
+            return condition(self, another, ' and ')
+        return condition(self, None, '')
     # Turn | to 'or'
     def __or__(self, another):
-        self.__final = '(' + self.__final + ' or ' + another.__final + ')'
+        if isinstance(another, condition):
+            return condition(self, another, ' or ')
+        return condition(self, None, '')
+    # Turn += to 'and'
+    # def __iand__(self, another) -> None:
+    #     if isinstance(another, condition):
+            # self = condition(self, another, ' and ')
 
     def __str__(self):
         return self.__final
@@ -58,17 +76,22 @@ class column(object):
 
     # Use some magic to convert operator into actual string
     def __lt__(self, value):
-        return condition(self.__name, convertor(value), '<')
+        return condition(self, value, '<')
     def __gt__(self, value):
-        return condition(self.__name, convertor(value), '>')
+        return condition(self, value, '>')
     def __le__(self, value):
-        return condition(self.__name, convertor(value), '<=')
+        return condition(self, value, '<=')
     def __ge__(self, value):
-        return condition(self.__name, convertor(value), '>=')
+        return condition(self, value, '>=')
     def __eq__(self, value):
-        return condition(self.__name, convertor(value), '=')
+        return condition(self, value, '=')
     def __ne__(self, value):
-        return condition(self.__name, convertor(value), '!=')
+        return condition(self, value, '!=')
+
+    def __lshift__(self, list):
+        return condition(self, f'({", ".join(map(str, list))})', ' in ')
+    def __rshift__(self, list):
+        return condition(self, f'({", ".join(map(str, list))})', ' not in ')
 
     def __str__(self):
         return self.__name
@@ -77,95 +100,142 @@ class column(object):
 class table(object):
 
     def __init__(self, name: str, columns: list[str], database):
-        self.__name = name
-        self.__columns = columns
-        self.__columns_entity = dict(zip(self.__columns, [column(x) for x in self.__columns]))
-        self.__database = database
+        self.name = name
+        self.columns = columns
+        self.columns_entity = dict(zip(self.columns, [column(x) for x in self.columns]))
+        self.database = database
 
     # Request for column
-    def __getattr__(self, __name: str) -> Any:
-        if __name in self.__columns:
-            return self.__columns_entity[__name]
+    def __getattr__(self, __name: str) -> column:
+        if __name in self.columns:
+            return self.columns_entity[__name]
+        raise IndexError('Column not exist.')
 
     # Basic convert, turning list to comma-seperated string
     @staticmethod
-    def __construct(values: list[column]) -> str:
-        return ', '.join(values)
+    def construct(values: list[column]) -> str:
+        return ', '.join(map(convertor, values))
 
     # Four common usage to turn combined-data into string
     @staticmethod
-    def make_conditions(arg: list) -> str:
+    def make_conditions(arg: list[Any]) -> str:
         conditions = [x for x in arg if isinstance(x, condition)]
-        finalCondition = None
+        additional_cond = [x for x in arg if isinstance(x, dict)]
+        finalCondition: condition | None = None
         if len(conditions) != 0:
             finalCondition = conditions[0]
             for single in conditions[1:]:
-                finalCondition += single
-        return str(finalCondition)
+                finalCondition = finalCondition & single
+        elif len(additional_cond) != 0:
+            finalCondition = condition(list(additional_cond[0].keys())[0], list(additional_cond[0].values())[0], '=')
+            for singleCondition in additional_cond:
+                for key in singleCondition.keys():
+                    if key == finalCondition.A:
+                        continue
+                    finalCondition = finalCondition & condition(key, singleCondition[key], '=')
+        if finalCondition != None:
+            return str(finalCondition)
+        else:
+            return ''
 
-    def make_columns(self, arg: list) -> str:
+    def make_columns(self, arg: list[Any]) -> str:
         cols = []
         for name in arg:
-            if name in self.__columns:
-                cols.append(name)
-        return self.__construct(cols)
+            if str(name) in self.columns:
+                cols.append(str(name))
+        return ', '.join(cols)
 
     def make_pairs(self, kwarg: dict[str, Any]) -> tuple[str, str]:
         pairs = dict()
         for columnName in kwarg.keys():
-            if columnName in self.__columns:
-                pairs[columnName] = (self.__columns_entity[columnName], kwarg[columnName])
-        finalPairs = zip(*pairs.values())
-        return (str(self.__construct(finalPairs[0])), str(self.__construct(finalPairs[0])))
+            if columnName in self.columns:
+                pairs[columnName] = (columnName, kwarg[columnName])
+        finalPairs = list(zip(*pairs.values()))
+        return (', '.join(finalPairs[0]), ', '.join(map(convertor, finalPairs[1])))
 
     def make_assigns(self, kwarg: dict[str, Any]) -> str:
         pairs = []
         for columnName in kwarg.keys():
-            if columnName in self.__columns:
+            if columnName in self.columns:
                 pairs.append(f'{columnName}={convertor(kwarg[columnName])}')
         return ', '.join(pairs)
 
-    async def __run(self, command: str):
-        await self.__database.execute(command)
-        await self.__database.commit()
+    async def __run(self, command: str, all: bool = False):
+        return await self.database.execute(command, all)
 
     # Basic SQL command convertor
-    async def select(self, *arg, orderby: column | None = None, all: bool = False, asc: bool = False):
+    async def select(self, *arg, orderby: column | None = None, all: bool = False, isAsc: bool = False) -> list:
         col = self.make_columns(arg)
         cod = self.make_conditions(arg)
         order = self.make_columns([orderby])
-        command = f'select {"*" if len(col) == 0 else f"({col})"} from {self.__name}{"" if cod is None else f"where ({cod})"}{"" if orderby is None else f" order by {order}"};'
-        await self.__run(command)
+        asc = ''
+        if isAsc:
+            asc = ' asc '
+        else:
+            asc = ' desc '
+        command = f'select {"*" if len(col) == 0 else f"{col}"} from {self.name}{"" if cod == "" else f" where {cod}"}{"" if orderby is None else f" order by {order}{asc}"};'
+        return await self.__run(command, all)
 
-    async def insert(self, **kwarg):
+    async def insert(self, **kwarg) -> None:
         pairs = self.make_pairs(kwarg)
-        command = f'insert into {self.__name} ({pairs[0]}) values ({pairs[1]});'
+        command = f'insert into {self.name} ({pairs[0]}) values ({pairs[1]});'
         await self.__run(command)
 
-    async def update(self, *arg, **kwarg):
+    async def update(self, *arg, **kwarg) -> None:
         cod = self.make_conditions(arg)
-        assigns = self.__make_assigns(kwarg)
-        command = f'update {self.__name} sets ({assigns}) where ({cod});'
-        await self.run(command)
-
-    async def delete(self, *arg):
-        cod = self.make_conditions(arg)
-        command = f'delete from {self.__name} where ({cod});'
+        assigns = self.make_assigns(kwarg)
+        command = f'update {self.name} set {assigns}{"" if cod == "" else f" where {cod}"};'
         await self.__run(command)
 
-# Cache for some small table
-class cache(object):
+    async def delete(self, *arg) -> None:
+        cod = self.make_conditions(arg)
+        command = f'delete from {self.name}{"" if cod == "" else f" where {cod}"};'
+        await self.__run(command)
 
-    def __init__(self, target: table):
-        self.__target = target
+    async def exists(self, *arg) -> bool:
+        cod = self.make_conditions(arg)
+        command = f'select * from {self.name} where {cod};'
+        await self.__run(command)
+        if len(await self.__fetch(True)) == 0:
+            return False
+        else:
+            return True
 
-        self.__cache = target.select()
 
-    def get(self, *arg):
-        pass
+# Cache for some small table which act like convertor
+class cache(table):
 
-    def put(self, **kwargs):
-        pass
+    def __init__(self, target: table, idName: str, contentName: str):
+        super().__init__(target.name, target.columns, target.database)
+        self.__cache = []
+        self.__AName = idName
+        self.__BName = contentName
+
+    async def renew(self):
+        self.__cache = await super().select(self.__AName, self.__BName, all=True)
+
+    def getContent(self, id):
+        for pair in self.__cache:
+            if pair[0] == id:
+                return pair[1]
+        raise IndexError('ID not found.')
+
+    async def getId(self, content):
+        for pair in self.__cache:
+            if pair[1] == content:
+                return pair[0]
+        await self.insert(**{self.__BName: content})
+        await self.renew()
+        for pair in self.__cache:
+            if pair[1] == content:
+                return pair[0]
+        raise RuntimeError('Unknown error in inserting or renewing.')
+
+    def __getitem__(self, id):
+        return self.getContent(id)
+
+    async def __call__(self, content):
+        return await self.getId(content)
 
 class localDB(object):
     DB_NAME = 'hikari_recent_db'
@@ -174,27 +244,34 @@ class localDB(object):
     INIT_SQL = ''
     OUTDATE = 180 * 24 * 60 * 60 # 180 days
 
-    url: LiteralString = 'https://api.wows.shinoaki.com'
-    queryUserInfo: LiteralString = '/public/wows/account/user/info'
-    queryUserMap: LiteralString = '/public/wows/bind/account/platform/bind/list'
-    queryUserClan: LiteralString = '/public/wows/account/search/clan/user'
+    # YUJI API
+    url: str = 'https://api.wows.shinoaki.com'
+    queryUserInfo: str = '/public/wows/account/user/info'
+    queryUserMap: str = '/public/wows/bind/account/platform/bind/list'
+    queryUserClan: str = '/public/wows/account/search/clan/user'
+
+    # WG API
+    # url: LiteralString = 'https://api.wows.shinoaki.com'
+    # queryUserInfo: LiteralString = '/public/wows/account/user/info'
+    # queryUserMap: LiteralString = '/public/wows/bind/account/platform/bind/list'
+    # queryUserClan: LiteralString = '/public/wows/account/search/clan/user'
 
     def __init__(self):
-        self.entity: sql.connection.Connection = None
-        self.cursor: sql.cursors.Cursor = None
+        self.entity: sql.Pool | None = None
 
-        self.table_name: list[str] = None
-        self.table: dict[str, list[str]] = None
+        self.table_name: list[str] | None = None
+        self.table: dict[str, list[str]] | None = None
         self.loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
 
         self.resolver = self.resolveShinoakiAPI
         self.constructer = self.constructShinoakiAPI
 
-        self.tables: enum = None
+        self.tables: dict | None = None
+        self.caches: dict | None = None
 
     @staticmethod
     async def factory():
-        self: localDB = None
+        self: localDB | None = None
         self = localDB()
         if not self.CREATED:
             self.CREATED = True
@@ -202,203 +279,105 @@ class localDB(object):
             secert = ''
             with open('./secert.txt')  as s:
                 secert = s.read().removesuffix('\n')
-            self.entity: sql.connection.Connection = await sql.connect(
+            self.entity: sql.Pool = await sql.create_pool(
                 user='root',
                 password=secert,
                 db=self.DB_NAME,
                 loop=self.loop,
-                connect_timeout=60
+                connect_timeout=60,
+                maxsize=16,
+                pool_recycle=8
             )
-            self.cursor: sql.cursors.Cursor = await self.entity.cursor()
-            with open(self.INIT_SQL_NAME) as file:
-                self.INIT_SQL = file.read()
-            await self.cursor.execute(self.INIT_SQL)
+            con: sql.Connection
+            cur: sql.Cursor
+            async with self.entity.acquire() as con:
+                async with con.cursor() as cur:
+                    with open(self.INIT_SQL_NAME) as file:
+                        self.INIT_SQL = file.read()
+                    await cur.execute(self.INIT_SQL)
 
-            # Get all table name
-            await self.cursor.execute(f'select table_name from information_schema.tables where table_schema="{self.DB_NAME}";')
-            self.table_name = [x[0] for x in await self.cursor.fetchall()]
-            # Get all column name for each table
-            self.table = dict()
-            for name in self.table_name:
-                await self.cursor.execute(f'select column_name from information_schema.columns where table_name="{name}";')
-                self.table[name] = [x[0] for x in await self.cursor.fetchall()]
+                    # Get all table name
+                    await cur.execute(f'select table_name from information_schema.tables where table_schema="{self.DB_NAME}";')
+                    self.table_name = [x[0] for x in await cur.fetchall()]
+                    # Get all column name for each table
+                    self.table = dict()
+                    for name in self.table_name:
+                        await cur.execute(f'select column_name from information_schema.columns where table_name="{name}";')
+                        self.table[name] = [x[0] for x in await cur.fetchall()]
 
             # Gen table object
             self.tables = dict()
             for singleTable in self.table_name:
                 self.tables[singleTable] = table(singleTable, self.table[singleTable], self)
 
+            # Gen cache object
+            self.caches = {
+                'color': cache(self.tables['color'], 'colorID', 'color')
+            }
+
             # We don't need to verify it here, so delete it
             del self.table
 
-            # Fetch the color for cache
-            await self.refreshColorCache()
+            # Renew cache
+            for c in self.caches.values():
+                await c.renew()
 
         # Return the object created
         return self
 
-    async def destroy(self):
+    async def destroy(self) -> None:
         await self.cursor.close()
         await self.entity.ensure_closed()
 
+    def __getattr__(self, name: str) -> table | cache:
+        if name in self.caches.keys():
+            return self.caches[name]
+        return self.tables[name]
 
-    async def execute(self, command: str):
-        await self.cursor.execute(command)
 
-    async def commit(self):
-        await self.entity.commit()
-
-# Out of date
-    @staticmethod
-    def converter(value: Any) -> str:
-        if isinstance(value, bool):
-            return str(int(value))
-        elif isinstance(value, int):
-            return str(value)
-        elif isinstance(value, float):
-            return f'{value:.2}'
-        else:
-            return f'"{value}"'
-    @staticmethod
-    def expandList(*args, divider: str = ', ', isKey: bool = False) -> str:
-        if len(args) != 0:
-            if isKey:
-                return divider.join([f'{x}' for x in args])
-            else:
-                return divider.join([f'{localDB.converter(x)}' for x in args])
-        else:
-            return '*'
-
-    @staticmethod
-    def expandDict(table: str, divider: str = '\n', **kwargs) -> str:
-        if len(kwargs) != 0:
-            pairs = []
-            for name, value in zip(kwargs.keys(), kwargs.values()):
-                if table != '':
-                    name = f'{table}.{name}'
-                if value is None:
-                    value = ' is null'
+    async def execute(self, command: str, all: bool):
+        con: sql.Connection
+        cur: sql.Cursor
+        async with self.entity.acquire() as con:
+            async with con.cursor() as cur:
+                await cur.execute(command)
+                await con.commit()
+                if all:
+                    return await cur.fetchall()
                 else:
-                    value = f'={localDB.converter(value)}'
-                pairs.append(f'{name}{value}')
-            return divider.join(pairs)
-        else:
-            return ''
-
-    # Color cache
-    async def refreshColorCache(self) -> None:
-        raw = await self.getFromTable('COLOR', all=True)
-        self.colorCache = dict(raw)
-
-    def colorExist(self, color: str) -> bool:
-        return color in self.colorCache.values()
-
-    async def getColorId(self, color: str) -> int:
-        id = [key for key in self.colorCache.keys() if self.colorCache[key] == color]
-        if len(id) == 0:
-            await self.setColor(color)
-            id = [key for key in self.colorCache.keys() if self.colorCache[key] == color]
-        return id[0]
-
-    def getColor(self, id: int) -> str:
-        return self.colorCache[id]
-
-    async def setColor(self, color: str) -> None:
-        await self.insertIntoTable('COLOR', color=color)
-        await self.refreshColorCache()
-
-    # Basic io from database
-    async def exec(self, command: str, all: bool = False) -> list:
-        await self.cursor.execute(command)
-        await self.entity.commit()
-        if all:
-            return await self.cursor.fetchall()
-        else:
-            return await self.cursor.fetchone()
-
-    # Secondary io
-    async def getFromTable(self, table: str, *args, orderBy: str | None = None, all: bool = False, desc: bool = True, **kwargs) -> list:
-        nameStr = self.expandList(*[self.tables[table].columns[name].value for name in args], isKey=True)
-        condition = self.expandDict(self.tables[table].value, ' and ', **kwargs)
-
-        return await self.exec(f'''
-            select {nameStr}
-            from {table}
-            {'' if condition == '' else 'where '}{condition}
-            {f"order by {orderBy} {'desc' if desc else 'asc'}" if orderBy is not None else ''};
-        ''', all)
-
-    async def insertIntoTable(self, table: str, **kwargs) -> None:
-        if len(kwargs) != 0:
-            await self.exec(f'''
-                insert into {table} ({self.expandList(*[self.tables[table].columns[name].value for name in kwargs.keys()], isKey=True)})
-                values ({self.expandList(*kwargs.values())});
-            ''')
-
-    async def updateToTable(self, table: str, condition: dict, updateValue: dict) -> None:
-        if table not in self.table_name:
-            raise ValueError(f'Table {table} not found.')
-        for name in condition.keys():
-            if name not in self.table[table]:
-                raise ValueError(f'Name {name} not found.')
-        for name in updateValue.keys():
-            if name not in self.table[table]:
-                raise ValueError(f'Name {name} not found.')
-
-        if len(updateValue) != 0:
-            await self.exec(f'''
-                update {table}
-                set {self.expandDict('', **updateValue)}
-                where {self.expandDict('', **condition)};
-            ''')
-
-    async def existInTable(self, table: str, **kwargs) -> bool:
-        if table not in self.table_name:
-            raise ValueError(f'Table {table} not found.')
-        for name in kwargs.keys():
-            if name not in self.table[table]:
-                raise ValueError(f'Name {name} not found.')
-
-        if len(kwargs) != 0:
-            await self.exec(f'''
-                select * from {table}
-                where {self.expandDict('', ' and ', **kwargs)};
-            ''')
-            if self.cursor.rowcount > 0:
-                return True
-            else:
-                return False
-
-    async def deleteFromTable(self, table: str, condition: str = None, **kwargs):
-        if table not in self.table_name:
-            raise ValueError(f'Table {table} not found.')
-        for name in kwargs.keys():
-            if name not in self.table[table]:
-                raise ValueError(f'Name {name} not found.')
-
-        if len(kwargs) != 0:
-            await self.exec(f'''
-                delete from {table}
-                where {self.expandDict('', ' and ', **kwargs) if condition is None else condition};
-            ''')
+                    return await cur.fetchone()
 
     # Upper level io
-    async def getLocalQueryId(self, **kwargs) -> list[int]:
-        raw = await self.getFromTable('QUERY', 'ID', **kwargs)
-        return [id[0] for id in raw]
+    async def getLocalQueryId(self, **kwargs) -> int:
+        raw = await self.query.select(self.query.ID, kwargs)
+        return raw[0]
 
     async def getLocalQuery(self, id: int) -> query:
-        raw = await self.getFromTable('QUERY', ID=id)
+        raw = await self.query.select(self.query.ID==id)
         return query(*raw[1:])
 
     async def qqid2wgid(self, id: str | int, getDefault: bool = True) -> list[str]:
         if getDefault:
-            return [x[0] for x in await self.getFromTable('USERS', 'ID', all=True, localID=id, isDefault=True)]
+            return [x[0] for x in await self.users.select(
+                self.users.ID,
+                self.users.localID==id,
+                self.users.isDefault==True,
+                all=True
+            )]
         else:
-            return [x[0] for x in await self.getFromTable('USERS', 'ID', all=True, localID=id)]
+            return [x[0] for x in await self.users.select(
+                self.users.ID,
+                self.users.localID==id,
+                all=True
+            )]
 
     async def renewRecord(self, userID: int, renewEntity: dict[str, query], time: int, shipID: str | None = None) -> None:
-        lastInfoRaw = await self.getFromTable('USER_INFO', *queryToGet, orderBy='queryTime', userID=userID, shipID=shipID)
+        lastInfoRaw = await self.user_info.select(
+            *queryToGet,
+            self.user_info.userID==userID,
+            self.user_info.shipID==shipID,
+            orderby=self.user_info.queryTime
+        )
         queryToRenew = []
         lastInfo = {}
         if lastInfoRaw is not None:
@@ -411,52 +390,62 @@ class localDB(object):
 
         if len(queryToRenew) == 0:
             # Nothing to renew, only update the timestamp
-            await self.updateToTable('USER_INFO', dict(zip(queryToGet, lastInfoRaw)), {'queryTime': time})
+            await self.user_info.update(self.user_info.queryTime==time, **dict(zip(queryToGet, lastInfoRaw)))
         else:
             # At least one record need update
             for renew in queryToRenew:
                 renewDict = renewEntity[renew].__dict__
-                await self.insertIntoTable('QUERY', **renewDict)
-                lastInfo[renew] = (await self.getLocalQueryId(**renewDict))[0]
+                await self.query.insert(**renewDict)
+                lastInfo[renew] = await self.getLocalQueryId(**renewDict)
 
             for key, value in zip(lastInfo.keys(), lastInfo.values()):
                 if isinstance(value, query):
-                    lastInfo[key] = (await self.getLocalQueryId(**value.__dict__))[0]
+                    lastInfo[key] = await self.getLocalQueryId(**value.__dict__)
 
-            await self.insertIntoTable('USER_INFO', **lastInfo, queryTime=time)
-        await self.entity.commit()
+            await self.user_info.insert(queryTime=time, userID=userID, **lastInfo)
 
     async def cleanUpOutOfDate(self, time: int) -> None:
         outDateTime = time - self.OUTDATE
-        await self.deleteFromTable('USER_INFO', condition=f'queryTime<{outDateTime}')
+        await self.user_info.delete(self.user_info.queryTime<outDateTime)
         allUsedQuery = []
-        for info in await self.getFromTable('USER_INFO', *queryToGet, orderBy='queryTime', desc=False, all=True):
+        for info in await self.user_info.select(*queryToGet, orderby=self.user_info.queryTime, all=True):
             allUsedQuery.extend(info)
-        await self.deleteFromTable('QUERY', condition=f'ID not in ({self.expandList(*allUsedQuery)})')
+        await self.query.delete(self.query.ID>>allUsedQuery)
 
     # Top level io
     async def getInfo(self, qqId: str, shipId: int = None) -> dict:
         wgid = (await self.qqid2wgid(qqId))[0]
-        queryRequester.query()
-        records = await self.getFromTable('USER_INFO', *queryToGet, 'clanID', orderBy='queryTime', userID=wgid, shipID=shipId)
+        await queryRequester.query()
+        records = await self.user_info.select(
+            *queryToGet,
+            self.user_info.clanID,
+            self.user_info.userID==wgid,
+            self.user_info.shipID==shipId,
+            orderby=self.user_info.queryTime
+        )
         records = dict(zip(queryToGet + ['clanID'], [await self.getLocalQuery(id) for id in records[:-1]] + [records[-1]]))
         return await self.constructer(records)
 
     async def getRecent(self, qqId: str, shipId: int = None, timeBack: int = 1) -> dict:
         wgid = (await self.qqid2wgid(qqId))[0]
-        queryRequester.query()
-        records = await self.getFromTable('USER_INFO', *queryToGet, 'clanID', orderBy='queryTime', userID=wgid, shipID=shipId)
+        await queryRequester.query()
+        records = await self.user_info.select(
+            *queryToGet,
+            self.user_info.clanID,
+            self.user_info.userID==wgid,
+            self.user_info.shipID==shipId,
+            orderby=self.user_info.queryTime
+        )
 
     async def refreshQQUsers(self, userList: dict[str, str]) -> None:
-        userListLocal = [x[0] for x in await self.getFromTable('LOCAL_USERS', 'ID', all=True)]
+        userListLocal = [x[0] for x in await self.local_users.select(self.local_users.ID, all=True)]
         for user in userList.keys():
             if user not in userListLocal:
-                await self.insertIntoTable('LOCAL_USERS', ID=user, userName=userList[user])
+                await self.local_users.insert(ID=user, userName=userList[user])
                 userListLocal.append(user)
 
-        userMapLocal = dict(await self.getFromTable('USERS', 'ID', 'localID', all=True))
+        userMapLocal = dict(await self.users.select('ID', 'localID', all=True))
         existKeys = userMapLocal.keys()
-        existValues = userMapLocal.values()
         async with httpx.AsyncClient(headers=headers, verify=False) as client:
             params = {
                 'platformType': 'QQ',
@@ -469,9 +458,9 @@ class localDB(object):
                 if maps['ok']:
                     for bindUser in maps['data']:
                         if bindUser['accountId'] not in existKeys:
-                            if not await self.existInTable('CLANS', ID=0):
-                                await self.insertIntoTable('CLANS', ID=0)
-                            await self.insertIntoTable('USERS',
+                            if not await self.clans.exists(self.clans.ID==0):
+                                await self.clans.insert(ID=0)
+                            await self.users.insert(
                                 ID=bindUser['accountId'],
                                 localID=bindUser['platformId'],
                                 userName=bindUser['userName'],
@@ -486,27 +475,23 @@ class localDB(object):
                             clanInfo = await client.get(self.url + self.queryUserClan, params=clanParams, follow_redirects=True)
                             clanInfo = clanInfo.json()
                             if clanInfo['ok']:
-                                if not await self.existInTable('CLANS', ID=clanInfo['data']['clanId']):
-                                    if not self.colorExist(clanInfo['data']['colorRgb']):
-                                        await self.setColor(clanInfo['data']['colorRgb'])
-                                    color = await self.getColorId(clanInfo['data']['colorRgb'])
-                                    await self.insertIntoTable('CLANS', ID=clanInfo['data']['clanId'], tag=clanInfo['data']['tag'], color=color)
-                                await self.updateToTable('USERS', {'ID': bindUser['accountId']}, {'clanID': clanInfo['data']['clanId']})
+                                if not await self.clans.exists(self.clans.ID==clanInfo['data']['clanId']):
+                                    color = await self.color.getId(clanInfo['data']['colorRgb'])
+                                    await self.clans.insert(ID=clanInfo['data']['clanId'], tag=clanInfo['data']['tag'], color=color)
+                                await self.users.update(self.users.ID==bindUser['accountId'], clanID=clanInfo['data']['clanId'])
 
     # Resolver
     async def resolveShinoakiAPI(self, data: dict) -> dict[str, query]:
         resultDict = dict()
 
         async def resolveSingleQuery(data: dict) -> query:
-            if not self.colorExist(data['damageData']['color']):
-                await self.setColor(data['damageData']['color'])
             return query(
                 data['battles'],
                 data['pr']['value'],
                 data['damage'],
-                await self.getColorId(data['damageData']['color']),
+                await self.color.getId(data['damageData']['color']),
                 data['wins'],
-                await self.getColorId(data['winsData']['color']),
+                await self.color.getId(data['winsData']['color']),
                 data['kd'],
                 data['hit']
             )
@@ -536,21 +521,21 @@ class localDB(object):
                 },
                 'damage': data.damage,
                 'damageData': {
-                    'color': self.getColor(data.damageColor)
+                    'color': self.color.getContent(data.damageColor)
                 },
                 'wins': data.winRate,
                 'winsData': {
-                    'color': self.getColor(data.winRateColor)
+                    'color': self.color.getContent(data.winRateColor)
                 },
                 'kd': data.kdRate,
                 'hit': data.hitRate
             }
 
         if data['clanID'] != 0:
-            clanInfo =  await self.getFromTable('CLANS', 'tag', 'colorRgb', ID=data['clanID'])
+            clanInfo =  await self.clans.select(self.clans.tag, self.clans.colorRgb, self.clans.ID==data['clanID'])
             resultDict['clanInfo'] = {
                 'tag': clanInfo[0],
-                'colorRgb': self.getColor(clanInfo[1])
+                'colorRgb': self.color.getContent(clanInfo[1])
             }
 
         resultDict['pvp'] = consructSingleQuery(data['totalQuery'])
@@ -581,7 +566,10 @@ class queryRequester:
 
     @staticmethod
     async def query():
-        users = await queryRequester.db.getFromTable('USERS', 'ID', 'serverName', all=True)
+        users = await queryRequester.db.users.select(
+            queryRequester.db.users.ID,
+            queryRequester.db.users.serverName,
+            all=True)
         for user in users:
             params = {
                 'accountId': user[0],
