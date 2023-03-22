@@ -1,18 +1,22 @@
-from typing import List
-import httpx
-import traceback
-import jinja2
 import re
 import time
+import traceback
+from asyncio.exceptions import TimeoutError
 from pathlib import Path
-from .data_source import servers,set_infoparams,set_damageColor,set_winColor,set_upinfo_color
-from .utils import match_keywords
-from .publicAPI import get_AccountIdByName,check_yuyuko_cache
-from nonebot_plugin_htmlrender import html_to_pic
+from typing import List
+
+import httpx
+import jinja2
+from httpx import ConnectTimeout
 from nonebot import get_driver
 from nonebot.log import logger
-from httpx import ConnectTimeout
-from asyncio.exceptions import TimeoutError
+from nonebot_plugin_htmlrender import html_to_pic
+
+from . import mainLocalDB
+from .data_source import (servers, set_damageColor, set_infoparams,
+                          set_upinfo_color, set_winColor)
+from .publicAPI import check_yuyuko_cache, get_AccountIdByName
+from .utils import match_keywords
 
 dir_path = Path(__file__).parent
 template_path = dir_path / "template"
@@ -24,7 +28,15 @@ env.globals.update(set_damageColor=set_damageColor,set_winColor=set_winColor,set
 headers = {
     'Authorization': get_driver().config.api_token
 }
-  
+
+async def getInfo(url, params):
+    async with httpx.AsyncClient(headers=headers) as client:
+        resp = await client.get(url, params=params, timeout=None)
+        result = resp.json()
+        logger.success(f"本次请求返回的状态码:{result['code']}")
+        logger.success(f"本次请求服务器计算时间:{result['queryTime']}")
+        return result
+
 async def get_AccountInfo(server_type,info,bot,ev):
     try:
         url,params = '',''
@@ -69,11 +81,13 @@ async def get_AccountInfo(server_type,info,bot,ev):
             logger.success('跳过上报数据，直接请求')
         url = 'https://api.wows.shinoaki.com/public/wows/account/user/info'
         logger.success(f"下面是本次请求的参数，如果遇到了问题，请将这部分连同报错日志一起发送给麻麻哦\n{url}\n{params}")
-        async with httpx.AsyncClient(headers=headers) as client:
-            resp = await client.get(url, params=params, timeout=None)
-            result = resp.json()
-            logger.success(f"本次请求返回的状态码:{result['code']}")
-            logger.success(f"本次请求服务器计算时间:{result['queryTime']}")
+        result = dict()
+        if mainLocalDB is not None:
+            result = await mainLocalDB.getInfo(params['accountId'])
+            result['code'] == 200
+        else:
+            # await bot.send(ev, '本地缓存不存在')
+            result = getInfo(url, params)
         if result['code'] == 200 and result['data']:
             template = env.get_template("wws-info.html")
             template_data = await set_infoparams(result['data'])

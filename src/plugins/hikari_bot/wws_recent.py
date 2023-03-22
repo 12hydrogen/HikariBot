@@ -1,19 +1,23 @@
-from typing import List
-import httpx
-import traceback
-import jinja2
 import re
 import time
+import traceback
+from asyncio.exceptions import TimeoutError
 from datetime import datetime
 from pathlib import Path
-from .data_source import servers,set_recentparams,set_damageColor,set_winColor,set_upinfo_color
-from .utils import match_keywords
-from nonebot_plugin_htmlrender import html_to_pic
-from .publicAPI import get_AccountIdByName,check_yuyuko_cache
-from nonebot import get_driver
-from nonebot.log import logger
+from typing import List
+
+import httpx
+import jinja2
 from httpx import ConnectTimeout
-from asyncio.exceptions import TimeoutError
+from nonebot import Bot, get_driver
+from nonebot.log import logger
+from nonebot_plugin_htmlrender import html_to_pic
+
+from . import mainLocalDB
+from .data_source import (servers, set_damageColor, set_recentparams,
+                          set_upinfo_color, set_winColor)
+from .publicAPI import check_yuyuko_cache, get_AccountIdByName
+from .utils import match_keywords
 
 dir_path = Path(__file__).parent
 template_path = dir_path / "template"
@@ -26,8 +30,14 @@ headers = {
     'Authorization': get_driver().config.api_token
 }
 
+async def getRecent(url, params) -> dict:
+    async with httpx.AsyncClient(headers=headers) as client:
+        resp = await client.get(url, params=params, timeout=None)
+        result = resp.json()
+        logger.success(f"本次请求返回的状态码:{result['code']}")
+        return result
 
-async def get_RecentInfo(server_type,info,bot,ev):
+async def get_RecentInfo(server_type,info,bot: Bot,ev):
     try:
         params,day = None,0
         if datetime.now().hour < 7:
@@ -82,16 +92,23 @@ async def get_RecentInfo(server_type,info,bot,ev):
             logger.success('跳过上报数据，直接请求')
         url = 'https://api.wows.shinoaki.com//api/wows/recent/v2/recent/info'
         logger.success(f"下面是本次请求的参数，如果遇到了问题，请将这部分连同报错日志一起发送给麻麻哦\n{url}\n{params}")
-        async with httpx.AsyncClient(headers=headers) as client:
-            resp = await client.get(url, params=params, timeout=None)
-            result = resp.json()
-            logger.success(f"本次请求返回的状态码:{result['code']}")
+        result = dict()
+        if mainLocalDB is not None:
+            if await mainLocalDB.recentReady(params['day']):
+                result = await mainLocalDB.getRecent(params['accountId'], timeBack = params['day'])
+                result['code'] == 200
+            else:
+                await bot.send(ev, '本地缓存尚未初始化完毕')
+                result = getRecent(url, params)
+        else:
+            # await bot.send(ev, '本地缓存不存在')
+            result = getRecent(url, params)
         if result['code'] == 200:
             if result['data']['shipData'][0]['shipData']:
                 template = env.get_template("wws-info-recent.html")
                 template_data = await set_recentparams(result['data'])
                 content = await template.render_async(template_data)
-                return await html_to_pic(content, wait=0, viewport={"width": 1200, "height": 100}) 
+                return await html_to_pic(content, wait=0, viewport={"width": 1200, "height": 100})
             else:
                 return '该日期数据记录不存在'
         elif result['code'] == 403:

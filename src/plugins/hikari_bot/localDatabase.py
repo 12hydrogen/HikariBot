@@ -1,14 +1,16 @@
 import asyncio
 import dataclasses
+import sqlite3 as sql
 import time
 from typing import Any
 
-import aiomysql as sql
 import httpx
 from nonebot import get_driver
 
+from .data_source import set_damageColor, set_winColor
+
 headers = {
-    # 'Authorization': get_driver().config.api_token # YUJI API key
+    'Authorization': get_driver().config.api_token # YUJI API key
 }
 
 @dataclasses.dataclass()
@@ -21,6 +23,24 @@ class query:
     winRateColor: int
     kdRate: float
     hitRate: float
+
+    def __add__(self, x):
+        if isinstance(x, query):
+            return query(
+                max(self.battleCount, x.battleCount),
+                0,
+                (self.damage + x.damage) / 2,
+                0,
+                (self.winRate + x.winRate) / 2,
+                0,
+                (self.kdRate + x.kdRate) / 2,
+                (self.hitRate + x.hitRate) / 2
+            )
+
+def setColor(self, type):
+    if isinstance(self, query):
+        self.damageColor = set_damageColor(self.damage, type)
+        self.winRateColor = set_winColor(self.winRate)
 
 # Convert Python type into SQL type
 def convertor(value, withQuote: bool = True) -> str:
@@ -249,6 +269,8 @@ class localDB(object):
     queryUserInfo: str = '/public/wows/account/user/info'
     queryUserMap: str = '/public/wows/bind/account/platform/bind/list'
     queryUserClan: str = '/public/wows/account/search/clan/user'
+    queryUserShipList: str = '/public/wows/account/ship/info/list'
+    queryShipInfo: str = '/public/wows/encyclopedia/ship/info'
 
     # WG API
     # url: LiteralString = 'https://api.wows.shinoaki.com'
@@ -257,7 +279,8 @@ class localDB(object):
     # queryUserClan: LiteralString = '/public/wows/account/search/clan/user'
 
     def __init__(self):
-        self.entity: sql.Pool | None = None
+        # self.entity: sql.Pool | None = None
+        self.entity: sql.Connection | None = None
 
         self.table_name: list[str] | None = None
         self.table: dict[str, list[str]] | None = None
@@ -279,31 +302,45 @@ class localDB(object):
             secert = ''
             with open('./secert.txt')  as s:
                 secert = s.read().removesuffix('\n')
-            self.entity: sql.Pool = await sql.create_pool(
-                user='root',
-                password=secert,
-                db=self.DB_NAME,
-                loop=self.loop,
-                connect_timeout=60,
-                maxsize=16,
-                pool_recycle=8
-            )
-            con: sql.Connection
-            cur: sql.Cursor
-            async with self.entity.acquire() as con:
-                async with con.cursor() as cur:
-                    with open(self.INIT_SQL_NAME) as file:
-                        self.INIT_SQL = file.read()
-                    await cur.execute(self.INIT_SQL)
+            # self.entity: sql.Pool = await sql.create_pool(
+            #     user='root',
+            #     password=secert,
+            #     db=self.DB_NAME,
+            #     loop=self.loop,
+            #     connect_timeout=60,
+            #     maxsize=16,
+            #     pool_recycle=8
+            # )
+            # con: sql.Connection
+            # cur: sql.Cursor
+            # async with self.entity.acquire() as con:
+            #     async with con.cursor() as cur:
+            #         with open(self.INIT_SQL_NAME) as file:
+            #             self.INIT_SQL = file.read()
+            #         await cur.execute(self.INIT_SQL)
 
-                    # Get all table name
-                    await cur.execute(f'select table_name from information_schema.tables where table_schema="{self.DB_NAME}";')
-                    self.table_name = [x[0] for x in await cur.fetchall()]
-                    # Get all column name for each table
-                    self.table = dict()
-                    for name in self.table_name:
-                        await cur.execute(f'select column_name from information_schema.columns where table_name="{name}";')
-                        self.table[name] = [x[0] for x in await cur.fetchall()]
+            #         # Get all table name
+            #         await cur.execute(f'select table_name from information_schema.tables where table_schema="{self.DB_NAME}";')
+            #         self.table_name = [x[0] for x in await cur.fetchall()]
+            #         # Get all column name for each table
+            #         self.table = dict()
+            #         for name in self.table_name:
+            #             await cur.execute(f'select column_name from information_schema.columns where table_name="{name}";')
+            #             self.table[name] = [x[0] for x in await cur.fetchall()]
+
+            self.entity: sql.Connection = sql.connect(
+                './hikari.db'
+            )
+
+            cur = self.entity.cursor()
+            with open(self.INIT_SQL_NAME) as file:
+                self.INIT_SQL = file.read()
+            await cur.execute(self.INIT_SQL)
+            cur.execute('select tbl_name from sqlite_master where type="table";')
+            self.table_name = [x[0] for x in cur.fetchall()]
+            for name in self.table_name:
+                cur.execute(f'pragma table_info("{name}")')
+                self.table[name] = [x[0] for x in cur.fetchall()]
 
             # Gen table object
             self.tables = dict()
@@ -336,16 +373,24 @@ class localDB(object):
 
 
     async def execute(self, command: str, all: bool):
-        con: sql.Connection
-        cur: sql.Cursor
-        async with self.entity.acquire() as con:
-            async with con.cursor() as cur:
-                await cur.execute(command)
-                await con.commit()
-                if all:
-                    return await cur.fetchall()
-                else:
-                    return await cur.fetchone()
+        # con: sql.Connection
+        # cur: sql.Cursor
+        # async with self.entity.acquire() as con:
+        #     async with con.cursor() as cur:
+        #         await cur.execute(command)
+        #         await con.commit()
+        #         if all:
+        #             return await cur.fetchall()
+        #         else:
+        #             return await cur.fetchone()
+
+        cur = self.entity.cursor()
+        cur.execute(command)
+        self.entity.commit()
+        if all:
+            return cur.fetchall()
+        else:
+            return cur.fetchone()
 
     # Upper level io
     async def getLocalQueryId(self, **kwargs) -> int:
@@ -353,6 +398,8 @@ class localDB(object):
         return raw[0]
 
     async def getLocalQuery(self, id: int) -> query:
+        if id is None:
+            return query()
         raw = await self.query.select(self.query.ID==id)
         return query(*raw[1:])
 
@@ -372,8 +419,12 @@ class localDB(object):
             )]
 
     async def renewRecord(self, userID: int, renewEntity: dict[str, query], time: int, shipID: str | None = None) -> None:
+        lastInfoRaw = None
+        queryList = queryToGet
+        if shipID is not None:
+            queryList = queryToGetShip
         lastInfoRaw = await self.user_info.select(
-            *queryToGet,
+            *queryList,
             self.user_info.userID==userID,
             self.user_info.shipID==shipID,
             orderby=self.user_info.queryTime
@@ -381,16 +432,16 @@ class localDB(object):
         queryToRenew = []
         lastInfo = {}
         if lastInfoRaw is not None:
-            lastInfo = dict(zip(queryToGet, [await self.getLocalQuery(id) for id in lastInfoRaw]))
+            lastInfo = dict(zip(queryList, [await self.getLocalQuery(id) for id in lastInfoRaw]))
             for key, value in zip(renewEntity.keys(), renewEntity.values()):
                 if value != lastInfo[key]:
                     queryToRenew.append(key)
         else:
-            queryToRenew = queryToGet
+            queryToRenew = queryList
 
         if len(queryToRenew) == 0:
             # Nothing to renew, only update the timestamp
-            await self.user_info.update(self.user_info.queryTime==time, **dict(zip(queryToGet, lastInfoRaw)))
+            await self.user_info.update(self.user_info.queryTime==time, **dict(zip(queryList, lastInfoRaw)))
         else:
             # At least one record need update
             for renew in queryToRenew:
@@ -413,29 +464,89 @@ class localDB(object):
         await self.query.delete(self.query.ID>>allUsedQuery)
 
     # Top level io
-    async def getInfo(self, qqId: str, shipId: int = None) -> dict:
-        wgid = (await self.qqid2wgid(qqId))[0]
+    async def getInfo(self, wgid: int, shipId: int = None) -> dict:
         await queryRequester.query()
         records = await self.user_info.select(
             *queryToGet,
+            self.user_info.queryTime,
             self.user_info.clanID,
             self.user_info.userID==wgid,
             self.user_info.shipID==shipId,
             orderby=self.user_info.queryTime
         )
-        records = dict(zip(queryToGet + ['clanID'], [await self.getLocalQuery(id) for id in records[:-1]] + [records[-1]]))
-        return await self.constructer(records)
+        records = dict(zip(queryToGet, [await self.getLocalQuery(id) for id in records[:-2]]))
+        records['queryTime'] = records[-2]
+        records['clanID'] = records[-1]
+        result = await self.constructer(records)
 
-    async def getRecent(self, qqId: str, shipId: int = None, timeBack: int = 1) -> dict:
-        wgid = (await self.qqid2wgid(qqId))[0]
+        temp = await self.users.select(self.user.userName, self.user.serverName, self.user.ID==wgid)
+        result['userName'] = temp[0]
+        result['serverName'] = temp[1]
+
+        result['dwpDataVO'] = {
+            'pr': 0,
+            'damage': 0,
+            'wins': 0
+        }
+        if shipId is not None:
+            result['rank'] = -1
+        result['battleCountAll'] = {
+            '1': 0,
+            '2': 0,
+            '3': 0,
+            '4': 0,
+            '5': 0,
+            '6': 0,
+            '7': 0,
+            '8': 0,
+            '9': 0,
+            '10': 0,
+            '11': 0
+        }
+        return result
+
+    async def recentReady(self, timeBack: int) -> bool:
+        records = await self.user_info.select(
+            self.user_info.queryTime,
+            orderby=self.user_info.queryTime,
+            all=True,
+            isAsc=True
+        )
+        return time.time() - records[0][0] > timeBack * 24 * 60 * 60
+
+    async def getRecent(self, wgid: int, shipId: int = None, timeBack: int = 1) -> dict:
         await queryRequester.query()
+        curTime = int(time.time())
+        # Convert Day to Second
+        timeBackSec = timeBack * 24 * 60 * 60
+        # Get records between selected time
         records = await self.user_info.select(
             *queryToGet,
             self.user_info.clanID,
+            self.user_info.queryTime,
             self.user_info.userID==wgid,
             self.user_info.shipID==shipId,
-            orderby=self.user_info.queryTime
+            self.user_info.queryTime>(curTime - timeBackSec),
+            orderby=self.user_info.queryTime,
+            all=True
         )
+        averageRecord = []
+        shipType = None
+        if shipId is not None:
+            temp = await self.ship.select(self.ship.shipType, self.ship.shipID==shipId)
+            if len(temp) == 0:
+                return False
+            shipType = temp[0]
+        for i in range(len(queryToGet)):
+            average = self.getLocalQuery(records[-1][i])
+            for j in range(len(records) - 1):
+                average = average + self.getLocalQueryId(records[j][i])
+            setColor(average, shipType)
+            averageRecord.append(average)
+
+        result = await self.constructer(dict(zip(queryToGet + ['clanID'], averageRecord + [records[0][-1]])))
+        return result
+
 
     async def refreshQQUsers(self, userList: dict[str, str]) -> None:
         userListLocal = [x[0] for x in await self.local_users.select(self.local_users.ID, all=True)]
@@ -446,7 +557,7 @@ class localDB(object):
 
         userMapLocal = dict(await self.users.select('ID', 'localID', all=True))
         existKeys = userMapLocal.keys()
-        async with httpx.AsyncClient(headers=headers, verify=False) as client:
+        async with httpx.AsyncClient(headers=headers) as client:
             params = {
                 'platformType': 'QQ',
                 'platformId': ''
@@ -495,22 +606,29 @@ class localDB(object):
                 data['kd'],
                 data['hit']
             )
+        if 'pvp' in data.keys():
+            resultDict['totalQueryID'] = await resolveSingleQuery(data['pvp'])
+            resultDict['soloQueryID'] = await resolveSingleQuery(data['pvpSolo'])
+            resultDict['twoQueryID'] = await resolveSingleQuery(data['pvpTwo'])
+            resultDict['threeQueryID'] = await resolveSingleQuery(data['pvpThree'])
+            resultDict['rankQueryID'] = await resolveSingleQuery(data['rankSolo'])
 
-        resultDict['totalQueryID'] = await resolveSingleQuery(data['pvp'])
-        resultDict['soloQueryID'] = await resolveSingleQuery(data['pvpSolo'])
-        resultDict['twoQueryID'] = await resolveSingleQuery(data['pvpTwo'])
-        resultDict['threeQueryID'] = await resolveSingleQuery(data['pvpThree'])
-        resultDict['rankQueryID'] = await resolveSingleQuery(data['rankSolo'])
+            resultDict['bbQueryID'] = await resolveSingleQuery(data['type']['Battleship'])
+            resultDict['crQueryID'] = await resolveSingleQuery(data['type']['Cruiser'])
+            resultDict['ddQueryID'] = await resolveSingleQuery(data['type']['Destroyer'])
+            resultDict['cvQueryID'] = await resolveSingleQuery(data['type']['AirCarrier'])
+            resultDict['ssQueryID'] = await resolveSingleQuery(data['type']['Submarine'])
 
-        resultDict['bbQueryID'] = await resolveSingleQuery(data['type']['Battleship'])
-        resultDict['crQueryID'] = await resolveSingleQuery(data['type']['Cruiser'])
-        resultDict['ddQueryID'] = await resolveSingleQuery(data['type']['Destroyer'])
-        resultDict['cvQueryID'] = await resolveSingleQuery(data['type']['AirCarrier'])
-        resultDict['ssQueryID'] = await resolveSingleQuery(data['type']['Submarine'])
+        elif 'ship' in data.keys():
+            resultDict['totalQueryID'] = await resolveSingleQuery(data['ship'])
+            resultDict['soloQueryID'] = await resolveSingleQuery(data['shipSolo'])
+            resultDict['twoQueryID'] = await resolveSingleQuery(data['shipTwo'])
+            resultDict['threeQueryID'] = await resolveSingleQuery(data['shipThree'])
+            resultDict['rankQueryID'] = await resolveSingleQuery(data['rankSolo'])
 
         return resultDict
 
-    async def constructShinoakiAPI(self, data: dict[str, query]) -> dict:
+    async def constructShinoakiAPI(self, data: dict[str, query | Any]) -> dict:
         resultDict = dict()
 
         def consructSingleQuery(data: query) -> dict:
@@ -521,11 +639,11 @@ class localDB(object):
                 },
                 'damage': data.damage,
                 'damageData': {
-                    'color': self.color.getContent(data.damageColor)
+                    'color': self.color.getContent(data.damageColor) if isinstance(data.damageColor, int) else data.damageColor
                 },
                 'wins': data.winRate,
                 'winsData': {
-                    'color': self.color.getContent(data.winRateColor)
+                    'color': self.color.getContent(data.winRateColor) if isinstance(data.winRateColor, int) else data.winRateColor
                 },
                 'kd': data.kdRate,
                 'hit': data.hitRate
@@ -538,23 +656,35 @@ class localDB(object):
                 'colorRgb': self.color.getContent(clanInfo[1])
             }
 
-        resultDict['pvp'] = consructSingleQuery(data['totalQuery'])
-        resultDict['pvpSolo'] = consructSingleQuery(data['soloQuery'])
-        resultDict['pvpTwo'] = consructSingleQuery(data['twoQuery'])
-        resultDict['pvpThree'] = consructSingleQuery(data['threeQuery'])
-        resultDict['rankSolo'] = consructSingleQuery(data['rankQuery'])
 
-        resultDict['type'] = {
-            'Battleship': consructSingleQuery(data['bbQuery']),
-            'Cruiser': consructSingleQuery(data['crQuery']),
-            'Destroyer': consructSingleQuery(data['ddQuery']),
-            'AirCarrier': consructSingleQuery(data['cvQuery']),
-            'Submarine': consructSingleQuery(data['ssQuery'])
-        }
+        if 'bbQueryID' in data.keys():
+            resultDict['pvp'] = consructSingleQuery(data['totalQuery'])
+            resultDict['pvpSolo'] = consructSingleQuery(data['soloQuery'])
+            resultDict['pvpTwo'] = consructSingleQuery(data['twoQuery'])
+            resultDict['pvpThree'] = consructSingleQuery(data['threeQuery'])
+            resultDict['rankSolo'] = consructSingleQuery(data['rankQuery'])
+
+            resultDict['type'] = {
+                'Battleship': consructSingleQuery(data['bbQuery']),
+                'Cruiser': consructSingleQuery(data['crQuery']),
+                'Destroyer': consructSingleQuery(data['ddQuery']),
+                'AirCarrier': consructSingleQuery(data['cvQuery']),
+                'Submarine': consructSingleQuery(data['ssQuery'])
+            }
+            resultDict['lastDateTime'] = data['queryTime']
+
+        else:
+            resultDict['shipInfo'] = consructSingleQuery(data['totalQuery'])
+            resultDict['shipSolo'] = consructSingleQuery(data['soloQuery'])
+            resultDict['shipTwo'] = consructSingleQuery(data['twoQuery'])
+            resultDict['shipThree'] = consructSingleQuery(data['threeQuery'])
+            resultDict['rankSolo'] = consructSingleQuery(data['rankQuery'])
+            resultDict['shipInfo']['lastBattlesTime'] = data['queryTime']
 
         return resultDict
 
 queryToGet = ['totalQueryID', 'soloQueryID', 'twoQueryID', 'threeQueryID', 'rankQueryID', 'bbQueryID', 'crQueryID', 'ddQueryID', 'cvQueryID', 'ssQueryID']
+queryToGetShip = ['totalQueryID', 'soloQueryID', 'twoQueryID', 'threeQueryID', 'rankQueryID']
 
 # Running in another thread
 class queryRequester:
@@ -575,7 +705,7 @@ class queryRequester:
                 'accountId': user[0],
                 'server': user[1]
             }
-            async with httpx.AsyncClient(headers=headers, verify=False) as client:
+            async with httpx.AsyncClient(headers=headers) as client:
                 raw = await client.get(url=queryRequester.db.url + queryRequester.db.queryUserInfo,
                                 params=params,
                                 follow_redirects=True)
@@ -583,9 +713,26 @@ class queryRequester:
                 if not result['ok']:
                     raise ConnectionError('Remote status not ok.')
                 entity = await queryRequester.db.resolver(result['data'])
-                curTime = int(time.time())
-                await queryRequester.db.renewRecord(user[0], entity, curTime)
-                await queryRequester.db.cleanUpOutOfDate(curTime)
+                await queryRequester.db.renewRecord(user[0], entity, result['lastDateTime'])
+
+                raw = await client.post(url=queryRequester.db.url + queryRequester.db.queryUserShipList,
+                                        params=params,
+                                        follow_redirects=True)
+                result = raw.json()
+                if not result['ok']:
+                    raise ConnectionError('Remote status not ok.')
+                for ship in result['data']['shipInfoList']:
+                    if await len(queryRequester.db.ship.select(queryRequester.db.ship.shipID==ship['shipIndex'])) == 0:
+                        await queryRequester.db.ship.insert(
+                            shipID=ship['shipIndex'],
+                            shipType=ship['shipType'],
+                            shipNameEN=ship['nameEnglish'],
+                            shipNameCN=ship['nameCn']
+                        )
+                    entity = await queryRequester.db.resolver(ship)
+                    await queryRequester.db.renewRecord(user[0], entity, ship['shipInfo']['lastBattlesTime'], ship['shipIndex'])
+
+                await queryRequester.db.cleanUpOutOfDate(time.time())
 
     @staticmethod
     async def startQueryLoop():
